@@ -24,7 +24,13 @@ Scope {
     PanelWindow {
         id: window
         screen: root.modelData
-        visible: root.open || panel.opacity > 0
+        visible: motion.shown
+
+        PanelMotion {
+            id: motion
+            open: root.open
+            namespace: "hyalo-launcher"
+        }
 
         implicitWidth: 640
         implicitHeight: 480
@@ -75,10 +81,7 @@ Scope {
             height: Math.min(parent.height, 76 + list.contentHeight + (list.count > 0 ? 12 : 0))
             radius: Theme.panelRadius
 
-            opacity: root.open ? 1 : 0
-            scale: root.open ? 1 : 0.96
-            Behavior on opacity { NumberAnimation { duration: Theme.normal; easing.type: Easing.OutCubic } }
-            Behavior on scale { NumberAnimation { duration: Theme.normal; easing.type: Easing.OutCubic } }
+            reveal: motion.fade
             Behavior on height { NumberAnimation { duration: Theme.fast; easing.type: Easing.OutCubic } }
 
             // Search field.
@@ -168,7 +171,7 @@ Scope {
                     Rectangle {
                         anchors.fill: parent
                         radius: 14
-                        color: row.isSelected ? Theme.selected : rowMouse.containsMouse ? Theme.hover : "transparent"
+                        color: row.isSelected ? Theme.selected : rowMouse.containsMouse ? Theme.hover : Theme.clear
                         Behavior on color { ColorAnimation { duration: Theme.fast } }
                     }
 
@@ -198,7 +201,7 @@ Scope {
                             maximumLineCount: 1
                             color: Theme.text
                             font.family: Theme.font
-                            font.weight: root.clipboard ? Font.Normal : Font.Medium
+                            font.styleName: root.clipboard ? "Regular" : "Medium"
                             font.pixelSize: Theme.textMd
                         }
 

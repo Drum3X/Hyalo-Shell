@@ -15,7 +15,7 @@ quickshell/   Quickshell QML (shell.qml = masaüstü, greeter.qml = giriş) — 
   `qsb --qt6 -o shaders/frost.frag.qsb shaders/frost.frag`.
 
 NixOS entegrasyonu (paket, greetd, Home Manager modülleri) şuradaydı:
-[Drum3X/Nix-Config @ 5381147](https://github.com/Drum3X/Nix-Config/tree/5381147).
+[Drum3X/Nix-Config @ 1538d48](https://github.com/Drum3X/Nix-Config/tree/1538d48).
 
 `shojiwm/` ShojiWM'in MIT lisanslı varsayılan config'inden türetildi
 (`shojiwm/LICENSE`). Geri kalanı GPL-3.0 (`LICENSE`).

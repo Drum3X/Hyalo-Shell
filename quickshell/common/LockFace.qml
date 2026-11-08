@@ -71,29 +71,16 @@ Item {
         anchors.fill: parent
         userWallpaper: root.userWallpaper
     }
-
-    // Shown as the card comes up.
-    MultiEffect {
-        anchors.fill: parent
-        source: wall
-        autoPaddingEnabled: false
-        blurEnabled: true
-        blurMax: 48
-        blur: 0.7
-        brightness: Theme.dark ? -0.12 : -0.04
-        opacity: root.reveal
-        visible: opacity > 0
-    }
-
-    // What the glass refracts: the wallpaper, fully blurred, never shown itself.
+    // What the glass refracts: the wallpaper, frosted to the same level as
+    // ShojiWM's glass (radius 2, one pass). Never shown.
     MultiEffect {
         id: frosted
         anchors.fill: parent
         source: wall
         autoPaddingEnabled: false
         blurEnabled: true
-        blurMax: 64
-        blur: 1.0
+        blurMax: 8
+        blur: 0.5
     }
     ShaderEffectSource {
         id: backdrop
@@ -116,8 +103,8 @@ Item {
             anchors.horizontalCenter: parent.horizontalCenter
             text: Qt.formatTime(root.now, "HH:mm")
             color: Theme.onWallpaper
-            font.family: Theme.font
-            font.weight: Font.Thin
+            font.family: Theme.fontDisplay
+            font.styleName: "Thin"
             font.pixelSize: Math.round(root.height * 0.15)
             font.letterSpacing: -2
             renderType: Text.CurveRendering
@@ -129,7 +116,7 @@ Item {
             color: Theme.onWallpaper
             opacity: 0.92
             font.family: Theme.font
-            font.weight: Font.Normal
+            font.styleName: "Regular"
             font.pixelSize: Math.round(root.height * 0.024)
         }
     }
@@ -158,7 +145,7 @@ Item {
                 text: root.heading.length > 0 ? root.heading.charAt(0).toUpperCase() : ""
                 color: Theme.onWallpaper
                 font.family: Theme.font
-                font.weight: Font.Light
+                font.styleName: "Light"
                 font.pixelSize: 38
             }
         }
@@ -168,7 +155,7 @@ Item {
             text: root.heading
             color: Theme.onWallpaper
             font.family: Theme.font
-            font.weight: Font.Medium
+            font.styleName: "Medium"
             font.pixelSize: 17
         }
 

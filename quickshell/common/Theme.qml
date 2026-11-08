@@ -11,41 +11,95 @@ Singleton {
 
     readonly property bool dark: ThemeState.dark
 
+    // The colours that change with the appearance, as one object per
+    // appearance. `palette` follows it; `cc` is always the dark one: the
+    // Control Center sits on dark glass in both appearances, as on macOS.
+    readonly property QtObject darkPalette: QtObject {
+        readonly property color text: "#f3f2fa"
+        readonly property color textDim: "#b4b6c8"
+        // Secondary text on the dark glass: textDim is about as light as the
+        // glass is over light windows.
+        readonly property color textSoft: "#dedee6"
+        readonly property color textFaint: "#80839a"
+        readonly property color accent: "#0a84ff"
+        readonly property color danger: "#ff8f9c"
+        readonly property color hover: Qt.rgba(1, 1, 1, 0.10)
+        readonly property color pressed: Qt.rgba(1, 1, 1, 0.16)
+        readonly property color buttonOff: Qt.rgba(1, 1, 1, 0.14)
+        readonly property color sliderTrack: Qt.rgba(1, 1, 1, 0.12)
+    }
+    readonly property QtObject lightPalette: QtObject {
+        readonly property color text: "#262838"
+        readonly property color textDim: "#5d6075"
+        readonly property color textSoft: "#5d6075"
+        readonly property color textFaint: "#8a8ca0"
+        readonly property color accent: "#007aff"
+        readonly property color danger: "#e0465c"
+        readonly property color hover: Qt.rgba(1, 1, 1, 0.26)
+        readonly property color pressed: Qt.rgba(1, 1, 1, 0.38)
+        readonly property color buttonOff: Qt.rgba(1, 1, 1, 0.42)
+        readonly property color sliderTrack: Qt.rgba(1, 1, 1, 0.34)
+    }
+    readonly property QtObject palette: dark ? darkPalette : lightPalette
+    readonly property QtObject cc: darkPalette
+
     // ----- glass ----------------------------------------------------------
     // Silhouette fill of every compositor-glass surface. Its alpha must stay
     // equal to ISLAND_GLASS_OPTIONS.surfaceOpacity (0.20) in
     // config/shojiwm/src/effect/island-glass.ts: ShojiWM divides by it to
     // recover the antialiased edge.
-    readonly property real glassAlpha: 0.20
-    readonly property color glassTint: dark ? Qt.rgba(0.07, 0.08, 0.13, glassAlpha)
-                                            : Qt.rgba(1, 1, 1, glassAlpha)
-    // Drawn inside the silhouette: a hairline rim and a soft top sheen.
-    readonly property color glassRim: dark ? Qt.rgba(1, 1, 1, 0.16) : Qt.rgba(1, 1, 1, 0.70)
-    readonly property color glassSheen: dark ? Qt.rgba(1, 1, 1, 0.05) : Qt.rgba(1, 1, 1, 0.22)
-    // Hover / pressed / selected wash on items inside glass.
-    readonly property color hover: dark ? Qt.rgba(1, 1, 1, 0.10) : Qt.rgba(1, 1, 1, 0.38)
-    readonly property color pressed: dark ? Qt.rgba(1, 1, 1, 0.16) : Qt.rgba(1, 1, 1, 0.55)
-    readonly property color selected: dark ? Qt.rgba(1, 1, 1, 0.14) : Qt.rgba(1, 1, 1, 0.50)
+    // ShojiWM's stock glass (shoji-bar-3's lens and blur) with a neutral,
+    // near-invisible silhouette: shoji-bar-3's #1a2433 tint only disappears
+    // over a dark wallpaper; over a light one it reads as a dark film.
+    readonly property real glassAlpha: 0.04
+    readonly property color glassTint: Qt.rgba(0.5, 0.5, 0.5, glassAlpha)
+    // Kept for popups drawn outside compositor glass (dock labels).
+    readonly property color glassRim: dark ? Qt.rgba(1, 1, 1, 0.14) : Qt.rgba(1, 1, 1, 0.45)
+    // Hairlines (dividers).
+    readonly property color line: dark ? Qt.rgba(1, 1, 1, 0.42) : Qt.rgba(0.15, 0.16, 0.22, 0.38)
+    readonly property color lineFaint: dark ? Qt.rgba(1, 1, 1, 0.22) : Qt.rgba(0.15, 0.16, 0.22, 0.18)
+    // macOS Control Center platters and controls, on the dimmed glass.
+    readonly property color module: dark ? Qt.rgba(1, 1, 1, 0.08) : Qt.rgba(1, 1, 1, 0.24)
+    readonly property color buttonOff: palette.buttonOff
+    readonly property color sliderTrack: palette.sliderTrack
+    // Hover / pressed / selected washes inside glass.
+    readonly property color hover: palette.hover
+    readonly property color pressed: palette.pressed
+    readonly property color selected: dark ? Qt.rgba(1, 1, 1, 0.14) : Qt.rgba(1, 1, 1, 0.32)
+    // "No wash": white at zero alpha. Fading a wash from "transparent"
+    // (black at zero alpha) passes through grey and flashes dark first.
+    readonly property color clear: Qt.rgba(1, 1, 1, 0)
+    // A white control (switched on) under the pointer and pressed.
+    readonly property color whiteHover: "#ececf1"
+    readonly property color whitePressed: "#dcdce3"
 
-    // QML-side glass (lock screen, greeter): drawn by the shell itself over
-    // the wallpaper it owns, so it can be more opaque.
-    readonly property color frostTint: dark ? Qt.rgba(0.08, 0.09, 0.15, 0.34) : Qt.rgba(1, 1, 1, 0.30)
+    // The tint over every piece of liquid glass. The compositor tints its own
+    // glass (and the window title bars) from GLASS_TINT in
+    // config/shojiwm/src/glass-tint.ts; keep these two equal to it. Used here
+    // by the glass the shell draws itself: the lock screen and the greeter.
+    readonly property color glassTintDark: "#4d08080a"    // #08080a4d
+    readonly property color glassTintLight: "#6bf6f6f8"   // #f6f6f86b
+    readonly property color frostTint: dark ? glassTintDark : glassTintLight
 
     // ----- text -------------------------------------------------------------
-    readonly property color text: dark ? "#f3f2fa" : "#262838"
-    readonly property color textDim: dark ? "#b4b6c8" : "#5d6075"
-    readonly property color textFaint: dark ? "#80839a" : "#8a8ca0"
+    readonly property color text: palette.text
+    readonly property color textDim: palette.textDim
+    readonly property color textFaint: palette.textFaint
     // Text straight on the wallpaper (lock clock, greeter).
     readonly property color onWallpaper: "#ffffff"
 
-    readonly property color accent: dark ? "#a9b8ff" : "#5b6cf0"
+    readonly property color accent: palette.accent
     readonly property color accentText: "#ffffff"
-    readonly property color danger: dark ? "#ff8f9c" : "#e0465c"
+    readonly property color danger: palette.danger
     readonly property color success: dark ? "#8fe3b0" : "#2fa56a"
 
     // ----- type -------------------------------------------------------------
-    readonly property string font: "Inter"
-    readonly property string fontMono: "JetBrains Mono Nerd Font"
+    // macOS: SF Pro Text for UI, SF Pro Display for large sizes, SF Mono.
+    // Weights are asked for by style name (font.styleName: "Semibold"), not
+    // font.weight: by weight Qt draws SF Pro's Medium and Semibold as Regular.
+    readonly property string font: "SF Pro Text"
+    readonly property string fontDisplay: "SF Pro Display"
+    readonly property string fontMono: "SF Mono"
     readonly property string iconFont: "Material Symbols Rounded"
 
     readonly property int textXs: 11
@@ -59,18 +113,30 @@ Singleton {
     readonly property int gap: 8
     readonly property int pad: 12
     readonly property int edge: 10          // distance of bar / dock from the screen edge
+    readonly property int screenRadius: 12  // the fake rounded screen corners
 
-    readonly property int barHeight: 34
+    readonly property int barHeight: 32
     readonly property int barRadius: barHeight / 2
-    readonly property int barExclusive: edge + barHeight + 4
+    // Where panels hanging from the menu bar start.
+    readonly property int barExclusive: barHeight + 8
 
-    readonly property int dockIcon: 48
-    readonly property int dockPad: 10
+    readonly property int dockIcon: 52
+    readonly property int dockPad: 9
     readonly property int dockHeight: dockIcon + dockPad * 2
-    readonly property int dockRadius: 24
+    readonly property int dockRadius: 19
+    readonly property int dockGap: 6          // dock above the bottom edge
 
     readonly property int panelRadius: 22
+    // Control Center grid: one round control, and the space between controls.
+    readonly property int ccUnit: 72
+    readonly property int ccGap: 14
     readonly property int tileRadius: 14
+    // Banners and the Notification Center.
+    readonly property int notificationWidth: 360
+    // How they slide in from the right edge, slowing down; and out to it,
+    // speeding up.
+    readonly property int slideIn: 420
+    readonly property int slideOut: 280
 
     // ----- motion -----------------------------------------------------------
     readonly property int fast: 140

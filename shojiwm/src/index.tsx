@@ -10,6 +10,8 @@ import {
   WindowBorder,
   backdropSource,
   compileEffect,
+  compileWindowEffect,
+  windowSource,
   compileLayerEffect,
   dualKawaseBlur,
   type SSDStyle,
@@ -29,6 +31,8 @@ import {
   Popup,
   type ReadonlySignal,
   DefaultComposition,
+  animationVariable,
+  easeOutCubic,
 } from "shoji_wm";
 import type { CompositionRenderable, ManagedWindowRect } from "shoji_wm/types";
 import { createIpcServer } from "shoji_wm/ipc";
@@ -49,7 +53,8 @@ import {
   WINDOW_STATE_WORKSPACE_OFFSET_Y,
   WINDOW_STATE_WORKSPACE_OPACITY,
 } from "./window-manager";
-import { ISLAND_GLASS } from "./effect/island-glass";
+import { islandGlassAt } from "./effect/island-glass";
+import { GLASS_TINT } from "./glass-tint";
 import { createFlip3D } from "./flip-3d";
 import { createWindowGrid } from "./window-grid";
 import { installDragAndDrop } from "./drag-and-drop";
@@ -69,7 +74,7 @@ COMPOSITOR.cursor.configure({
 });
 
 COMPOSITOR.process.once("GTK-CSD-control-buttons", {
-  command: "gsettings set org.gnome.desktop.wm.preferences button-layout ':minimize,maximize,close'",
+  command: "gsettings set org.gnome.desktop.wm.preferences button-layout ':'",
   runPolicy: "once-per-session",
 });
 
@@ -79,6 +84,16 @@ COMPOSITOR.window.decoration.configure((_window, context) => {
 
 // enable triple buffer mode for massive performance
 COMPOSITOR.rendering.framePacing = "throughput";
+
+/**
+ * Windows 7 style: on server-decorated windows the glass frame goes all the
+ * way round the client, not just across the title bar. Kept thin. `naturalRootRect` and the window
+ * compositions must agree on it. Declared before the window manager, which
+ * calls naturalRootRect.
+ */
+const GLASS_FRAME_PX = 4;
+/** The client inside the glass frame is rounded too. */
+const CLIENT_RADIUS_PX = 8;
 
 const HYBRID_WINDOW_MANAGER = new HybridWindowManager(naturalRootRect);
 
@@ -355,7 +370,7 @@ COMPOSITOR.onDisable(() => {
 // ---------------------------------------------------------------------------
 const SHELL = "hyalo-shell";
 const TERMINAL = "ghostty";
-const BROWSER = "chromium";
+const BROWSER = "vivaldi";
 const FILES = "nautilus";
 
 const spawn = (command: string | string[]) => () => {
@@ -371,6 +386,27 @@ const shellCall = (...args: string[]) => {
 const [themeDark, setThemeDark] = signal(false);
 WORKSPACE_IPC.handle("theme.set", (params) => {
   setThemeDark((params as { mode?: string } | undefined)?.mode === "dark");
+});
+
+// How much of a hyalo-* surface's glass shows, by layer namespace. The shell
+// fades its panels in and out by sending
+//   glass.fade  { namespace, value }   (value 0..1)
+// as it animates: the glass cannot fade with the surface, since its shape is
+// read from the surface's alpha.
+const glassFades = new Map<string, ReturnType<typeof signal<number>>>();
+function glassFadeEntry(namespace: string) {
+  let entry = glassFades.get(namespace);
+  if (!entry) {
+    entry = signal(1);
+    glassFades.set(namespace, entry);
+  }
+  return entry;
+}
+const glassFade = (namespace: string) => glassFadeEntry(namespace)[0];
+WORKSPACE_IPC.handle("glass.fade", (params) => {
+  const { namespace, value } = (params ?? {}) as { namespace?: string; value?: number };
+  if (typeof namespace === "string" && typeof value === "number")
+    glassFadeEntry(namespace)[1](value);
 });
 
 // The active keyboard layout, for the bar's layout indicator.
@@ -401,9 +437,11 @@ COMPOSITOR.process.once("session-target", {
 });
 
 // The shell: bar, dock, launcher, notifications, OSD, lock screen, wallpaper.
+// Restarted whenever it exits: a rebuild stops it so it comes back on the new
+// config (modules/home/desktop/shell.nix).
 COMPOSITOR.process.service("shell", {
   command: [SHELL],
-  restart: "on-failure",
+  restart: "on-exit",
 });
 
 // cliphist clipboard history watchers. Text and image need separate watchers;
@@ -632,7 +670,8 @@ const BACKGROUND_BLUR = compileEffect({
   capturePadding: 24,
   invalidate: { kind: "on-source-damage-box", damagePadding: 8 },
   alpha: "preserve",
-  pipeline: [dualKawaseBlur({ radius: 4, passes: 2 }), backdropFade()],
+  // Hyalo: the same blur as the window frames and the bar (radius 2, one pass).
+  pipeline: [dualKawaseBlur({ radius: 2, passes: 1 }), backdropFade()],
 });
 COMPOSITOR.effect.background_effect = computed(() =>
   WINDOW_SWITCHER.blurSuspended() ? null : BACKGROUND_BLUR,
@@ -660,13 +699,22 @@ const LAYER_BLUR_MASK = compileLayerEffect({
   ],
 });
 
+// The panels at the top right (the Control Center, the Notification Center,
+// the banners, the OSD) and the menu bar's capsule are on dark glass in both
+// appearances, as on macOS (Theme.cc in the shell), a lighter one in the
+// light appearance.
+const DARK_GLASS_NAMESPACES = new Set(["hyalo-control", "hyalo-notification-center", "hyalo-notify", "hyalo-osd"]);
+const darkGlass = (namespace: string) =>
+  DARK_GLASS_NAMESPACES.has(namespace) || namespace.startsWith("hyalo-bar-capsule-");
+
 COMPOSITOR.effect.layer = (layer) => {
   const namespace = layer.namespace();
-  // hyalo-shell's surfaces draw only a translucent silhouette (alpha 0.20,
+  // hyalo-shell's surfaces draw only a faint silhouette (Theme.glassAlpha ==
   // ISLAND_GLASS_OPTIONS.surfaceOpacity) and let the compositor recover the
   // shape from it and refract what is behind.
   if (namespace?.startsWith("hyalo-")) {
-    return { behind: ISLAND_GLASS };
+    const tint = themeDark() ? "dark" : darkGlass(namespace) ? "controlLight" : "light";
+    return { behind: islandGlassAt(tint, glassFade(namespace)()) };
   }
   // The wallpaper, and anything else that wants no glass at all.
   if (namespace === "no_blur") {
@@ -718,7 +766,7 @@ COMPOSITOR.effect.popup = (popup) => {
 const isChromiumFamily = (appId: string): boolean => {
   const id = appId.toLowerCase();
   return (
-    id.includes("chrome") || id.includes("chromium") || id.includes("electron")
+    id.includes("chrome") || id.includes("chromium") || id.includes("vivaldi") || id.includes("electron")
   );
 };
 
@@ -764,12 +812,15 @@ COMPOSITOR.event.onStartClose((window) => {
 });
 
 COMPOSITOR.event.onClose((window) => {
+  forgetWindow(window);
   HYBRID_WINDOW_MANAGER.onClose(window);
   scheduleWorkspaceBroadcast();
 });
 
 COMPOSITOR.event.onFocus((window, focused) => {
   HYBRID_WINDOW_MANAGER.onFocus(window, focused);
+  registerWindow(window);
+  startFocusAnimation(window, focused);
   if (focused) {
     HYBRID_WINDOW_MANAGER.recordFocus(window.id);
     scheduleWorkspaceBroadcast();
@@ -863,14 +914,22 @@ function usesClientDecoration(decoration: WindowDecorationState): boolean {
 // border for client-decorated windows must drop WINDOW_BORDER_PX here too.
 function naturalRootRect(window: WaylandWindow): ManagedWindowRect {
   const client = window.position;
-  const titlebar = usesClientDecoration(window.decoration.peek())
-    ? 0
-    : TITLEBAR_HEIGHT;
+  // Client-decorated windows (VS Code, GTK apps) draw their own top edge and
+  // get only the border; server-decorated ones get the title bar and the glass
+  // frame down the sides and along the bottom.
+  if (usesClientDecoration(window.decoration.peek())) {
+    return {
+      x: client.x - WINDOW_BORDER_PX,
+      y: client.y - WINDOW_BORDER_PX,
+      width: client.width + WINDOW_BORDER_PX * 2,
+      height: client.height + WINDOW_BORDER_PX * 2,
+    };
+  }
   return {
-    x: client.x - WINDOW_BORDER_PX,
-    y: client.y - titlebar - WINDOW_BORDER_PX,
-    width: client.width + WINDOW_BORDER_PX * 2,
-    height: client.height + titlebar + WINDOW_BORDER_PX * 2,
+    x: client.x - WINDOW_BORDER_PX - GLASS_FRAME_PX,
+    y: client.y - TITLEBAR_HEIGHT - WINDOW_BORDER_PX,
+    width: client.width + (WINDOW_BORDER_PX + GLASS_FRAME_PX) * 2,
+    height: client.height + TITLEBAR_HEIGHT + GLASS_FRAME_PX + WINDOW_BORDER_PX * 2,
   };
 }
 
@@ -878,11 +937,117 @@ function naturalRootRect(window: WaylandWindow): ManagedWindowRect {
  * The title bar's button size, padding and gap. `titlebarButtonAt` finds the
  * buttons with the same numbers, so change them here.
  */
-const TITLEBAR_BUTTON_SIZE = 16;
-const TITLEBAR_PADDING_X = 8;
+// ---- focus transition ----
+// Gaining or losing focus crossfades the frame (rim, shadow, title, traffic
+// lights) with the shell's ease-out curve instead of switching at once.
+const FOCUS_ANIMATION_MS = 1000;
+// Progress of the running focus change: 1 when it starts, 0 once settled, so a
+// window that never animated (or survived a hot reload) shows its state as is.
+const FOCUS_CHANGE = animationVariable("focus-change");
+
+// The window objects of the composition and the focus events share one
+// animation store; the effect factory below is handed another copy of the
+// window whose store never sees the fade. Everything is looked up by id
+// against the first (composition / event) object instead.
+const primaryWindows = new Map<string, WaylandWindow>();
+
+function primaryWindow(window: WaylandWindow): WaylandWindow {
+  return primaryWindows.get(window.id) ?? window;
+}
+
+/** Called from the composition and the focus events with the real object. */
+function registerWindow(window: WaylandWindow): void {
+  primaryWindows.set(window.id, window);
+}
+
+function forgetWindow(window: WaylandWindow): void {
+  primaryWindows.delete(window.id);
+}
+
+// A new signal for every caller: the compositor only tracks a shared one in the
+// first place that reads it, and the others (the title bar buttons) stop
+// redrawing.
+function focusAmount(window: WaylandWindow): ReadonlySignal<number> {
+  const primary = primaryWindow(window);
+  const change = primary.animation.variable(FOCUS_CHANGE);
+  return computed(() => (primary.isFocused() ? 1 - change() : change()));
+}
+
+const lastFocusState = new WeakMap<WaylandWindow, boolean>();
+
+function startFocusAnimation(window: WaylandWindow, focused: boolean): void {
+  // Repeated focus events for the same state must not replay the fade.
+  if ((lastFocusState.get(window) ?? !focused) === focused) {
+    return;
+  }
+  lastFocusState.set(window, focused);
+  // Pick up from where an interrupted change left off, so it reverses smoothly.
+  const remaining = window.animation.variable(FOCUS_CHANGE)();
+  window.animation.start(FOCUS_CHANGE, {
+    duration: FOCUS_ANIMATION_MS,
+    from: 1 - remaining,
+    to: 0,
+    easing: easeOutCubic,
+  });
+}
+
+function parseHexColor(hex: string): [number, number, number, number] {
+  const v = hex.replace("#", "");
+  const a = v.length === 8 ? parseInt(v.slice(6, 8), 16) : 255;
+  return [parseInt(v.slice(0, 2), 16), parseInt(v.slice(2, 4), 16), parseInt(v.slice(4, 6), 16), a];
+}
+
+/** Mix two `#rrggbb[aa]` colors: `t` 0 gives `from`, 1 gives `to`. */
+function mixColor(from: string, to: string, t: number): string {
+  const a = parseHexColor(from);
+  const b = parseHexColor(to);
+  return (
+    "#" +
+    a
+      .map((c, i) => Math.round(c + (b[i] - c) * t).toString(16).padStart(2, "0"))
+      .join("")
+  );
+}
+
+function focusMix(window: WaylandWindow, from: string, to: string): ReadonlySignal<string> {
+  const focus = focusAmount(window);
+  return computed(() => mixColor(from, to, focus()));
+}
+
+// Unfocused windows sit a little dimmer and brighten with the focus fade:
+// a black veil in front of the client (effect/window-dim.frag), at 0 on the
+// focused window. It stays attached (switching it on and off as focus moves
+// did not take), except on fullscreen windows, which keep direct scanout.
+const UNFOCUSED_DIM_DARK = 0.18;
+const UNFOCUSED_DIM_LIGHT = 0.05;
+const WINDOW_DIM_SHADER = loadShader("./src/effect/window-dim.frag");
+
+// A fresh effect with a plain number each time: the compositor does not
+// follow a signal uniform on a window effect. The factory itself reads the
+// focus inputs, so it re-runs on every frame of the fade.
+function windowDimEffect(window: WaylandWindow) {
+  const primary = primaryWindow(window);
+  const change = primary.animation.variable(FOCUS_CHANGE)();
+  const focus = primary.isFocused() ? 1 - change : change;
+  const dim = (1 - focus) * (themeDark() ? UNFOCUSED_DIM_DARK : UNFOCUSED_DIM_LIGHT);
+  return compileWindowEffect({
+    input: windowSource(),
+    alpha: "preserve",
+    pipeline: [shaderStage(WINDOW_DIM_SHADER, { uniforms: { dim } })],
+  });
+}
+
+COMPOSITOR.effect.window = (window) =>
+  window.state[WINDOW_STATE_FULLSCREEN]()
+    ? null
+    : { inFront: windowDimEffect(window) };
+
+const TITLEBAR_BUTTON_SIZE = 13;
+const TITLEBAR_PADDING_X = 12;
 const TITLEBAR_GAP = 8;
 
 COMPOSITOR.window.composition = (window: WaylandWindow) => {
+  registerWindow(window);
   const useClientDecoration = usesClientDecoration(window.decoration());
   const workspaceVisible = window.state[WINDOW_STATE_WORKSPACE_VISIBLE];
   const workspaceOffsetY = window.state[WINDOW_STATE_WORKSPACE_OFFSET_Y];
@@ -910,31 +1075,37 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
     () => minimizeVisualIdle() || (!workspaceVisible() && !tileDragging()),
   );
 
-  // Hyalo glass: a thin light rim on a frosted title bar, in both palettes.
+  // 0 unfocused … 1 focused, eased over FOCUS_ANIMATION_MS on every change.
+  const focus = focusAmount(window);
+  // The edge of the glass, as on the bar and dock: a light rim.
   const borderColor = computed(() =>
-    window.isFocused()
-      ? themeDark() ? "#ffffff59" : "#ffffffd9"
-      : themeDark() ? "#ffffff26" : "#ffffff80",
-  );
-  // A soft drop shadow under the frame; the focused window floats a bit higher.
-  // The window selected in the window switcher glows white instead (it fits
-  // in the switcher's texture margin).
-  const windowShadow = computed(() =>
-    WINDOW_SWITCHER.selectedWindowId() === window.id
-      ? [{ blur: 28, spread: 4, color: "#ffffffd0" }]
-      : window.isFocused()
-        ? [{ y: 12, blur: 36, spread: -4, color: themeDark() ? "#00000090" : "#3a3f6a40" }]
-        : [{ y: 4, blur: 18, spread: -4, color: themeDark() ? "#00000060" : "#3a3f6a26" }],
-  );
-  const titlebarBackground = computed(() =>
     themeDark()
-      ? window.isFocused() ? "#1c1f2e99" : "#24283a80"
-      : window.isFocused() ? "#ffffff8c" : "#f4f2fa73",
+      ? mixColor("#ffffff2b", "#ffffff55", focus())
+      : mixColor("#ffffff66", "#ffffffb3", focus()),
+  );
+  // A soft drop shadow under the frame; the focused window floats a bit higher
+  // and rises into it as it takes focus. The window selected in the window
+  // switcher glows white instead (it fits in the switcher's texture margin).
+  const windowShadow = computed(() => {
+    if (WINDOW_SWITCHER.selectedWindowId() === window.id) {
+      return [{ blur: 28, spread: 4, color: "#ffffffd0" }];
+    }
+    const t = focus();
+    const color = themeDark()
+      ? mixColor("#00000060", "#00000090", t)
+      : mixColor("#3a3f6a26", "#3a3f6a40", t);
+    return [{ y: 4 + 8 * t, blur: 18 + 18 * t, spread: -4, color }];
+  });
+  // The tint over the frame glass, as on macOS: enough that the title stays
+  // readable over a dark window behind (VS Code) or a light one. The same on
+  // every piece of glass (glass-tint.ts), and when unfocused.
+  const titlebarBackground = computed(() =>
+    themeDark() ? GLASS_TINT.dark : GLASS_TINT.light,
   );
   const titleColor = computed(() =>
     themeDark()
-      ? window.isFocused() ? "#f2f1f8" : "#b9bccb"
-      : window.isFocused() ? "#262838" : "#6b6e80",
+      ? mixColor("#d0d1da", "#f2f1f8", focus())
+      : mixColor("#4a4b55", "#262838", focus()),
   );
 
   const titlebarStyle: SSDStyle = {
@@ -950,15 +1121,19 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
     capturePadding: 24,
     invalidate: { kind: "on-source-damage-box", damagePadding: 8 },
     pipeline: [
-      dualKawaseBlur({ radius: 4, passes: 2 }),
+      // Hyalo: the same glass as the bar and dock (ISLAND_GLASS): the same light
+      // blur, a lens at the rim, its colour fringe and specular line, no tint.
+      dualKawaseBlur({ radius: 2, passes: 1 }),
       shaderStage(loadShader("./src/effect/liquid-glass.frag"), {
         uniforms: {
           // Follow the window's rounded corners.
           glass_radius_px: -1.0,
-          distortion_depth: 0.2,
-          distortion_strength: 0.15,
-          chromatic_shift_px: 3.0,
-          glass_tint: 0.9,
+          distortion_depth: 0.12,
+          distortion_strength: 0.03,
+          chromatic_shift_px: 1.9,
+          glass_tint: 1.0,
+          highlight_strength: 0.6,
+          highlight_width_px: 2.0,
         },
       }),
       backdropFade(),
@@ -977,20 +1152,18 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
   // textures: there is nothing under a window there to blur.
   const blurSuspended = WINDOW_SWITCHER.blurSuspended();
 
-  const appIcon = (
-    <AppIcon icon={window.icon} style={{ width: 16, height: 16 }} />
-  );
   const label = (
     <Label
       text={window.title}
       style={{
         color: titleColor,
-        fontFamily: ["Inter", "Noto Sans CJK JP", "Noto Color Emoji"],
+        fontFamily: ["SF Pro Text", "Noto Sans CJK JP", "Noto Color Emoji"],
         fontSize: 13,
         fontWeight: 600,
         flexGrow: 1,
         flexShrink: 1,
         minWidth: 0,
+        textAlign: "center",
       }}
     />
   );
@@ -998,12 +1171,14 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
   const maximizeButton = <MaximizeButton window={window} />;
   const closeButton = <CloseButton window={window} />;
 
+  // macOS order: the traffic lights on the left, the title centred on the
+  // window (the spacer on the right balances the buttons).
   const titlebarContent = [
-    appIcon,
-    label,
+    closeButton,
     minimizeButton,
     maximizeButton,
-    closeButton,
+    label,
+    <Box style={{ width: TITLEBAR_BUTTON_SIZE * 3 + TITLEBAR_GAP * 2, flexShrink: 0 }} />,
   ];
   var innerComponents = (
     <Box direction="column">
@@ -1024,14 +1199,25 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
     </Box>
   );
 
-  const TERMINALS = ["kitty", "ghostty"];
-
-  if (TERMINALS.includes(window.appId() ?? "")) {
+  // Every server-decorated window is framed in the glass (it shows through
+  // the title bar, and behind translucent clients such as the terminal).
+  {
     const terminalContent = [
       <Box direction="row" style={titlebarStyle}>
         {titlebarContent}
       </Box>,
-      <ClientWindow />,
+      <Box
+        style={{
+          paddingLeft: GLASS_FRAME_PX,
+          paddingRight: GLASS_FRAME_PX,
+          paddingBottom: GLASS_FRAME_PX,
+          background: titlebarBackground,
+        }}
+      >
+        <Box style={{ borderRadius: CLIENT_RADIUS_PX, overflow: "hidden" }}>
+          <ClientWindow />
+        </Box>
+      </Box>,
     ];
     innerComponents = blurSuspended ? (
       <Box direction="column">{terminalContent}</Box>
@@ -1142,8 +1328,8 @@ COMPOSITOR.window.composition = (window: WaylandWindow) => {
 
 /**
  * The title bar button at `(x, y)`, logical px from the top-left corner of
- * `window.rect` (the frame: border, then the title bar). From the right:
- * close, maximize, minimize. Each button takes the whole title bar height
+ * `window.rect` (the frame: border, then the title bar). From the left, as on
+ * macOS: close, minimize, maximize. Each button takes the whole title bar height
  * and half the gap on both sides, so a scaled-down card still has a usable
  * target.
  */
@@ -1157,11 +1343,11 @@ function titlebarButtonAt(window: WaylandWindow, x: number, y: number): Titlebar
   if (y < WINDOW_BORDER_PX || y > WINDOW_BORDER_PX + TITLEBAR_HEIGHT) {
     return null;
   }
-  const buttons: TitlebarButton[] = ["close", "maximize", "minimize"];
+  const buttons: TitlebarButton[] = ["close", "minimize", "maximize"];
   const pitch = TITLEBAR_BUTTON_SIZE + TITLEBAR_GAP;
-  const right = window.rect.width - WINDOW_BORDER_PX - TITLEBAR_PADDING_X;
+  const left = WINDOW_BORDER_PX + TITLEBAR_PADDING_X;
   for (let i = 0; i < buttons.length; i++) {
-    const center = right - TITLEBAR_BUTTON_SIZE / 2 - i * pitch;
+    const center = left + TITLEBAR_BUTTON_SIZE / 2 + i * pitch;
     if (Math.abs(x - center) <= pitch / 2) {
       return buttons[i];
     }
@@ -1172,7 +1358,9 @@ function titlebarButtonAt(window: WaylandWindow, x: number, y: number): Titlebar
 const CloseButton = ({ window }: { window: WaylandWindow }) => {
   const [hover, setHover] = useState(false);
 
-  const borderColor = hover((hover) => (hover ? "#00000000" : "#F0808030"));
+  // macOS traffic lights: coloured on the focused window, grey otherwise.
+  const buttonBackground = focusMix(window, "#c8c7cc", "#ff5f57");
+  const borderColor = focusMix(window, "#b6b5ba", "#e2463f");
 
   var icon: CompositionRenderable | null = null;
   if (hover()) {
@@ -1197,8 +1385,8 @@ const CloseButton = ({ window }: { window: WaylandWindow }) => {
         style={{
           width: TITLEBAR_BUTTON_SIZE,
           height: TITLEBAR_BUTTON_SIZE,
-          borderRadius: 8,
-          background: "#FFFFFF20",
+          borderRadius: TITLEBAR_BUTTON_SIZE / 2,
+          background: buttonBackground,
           border: { px: 1, color: borderColor },
         }}
         onClick={window.close}
@@ -1242,7 +1430,7 @@ const TitlebarTooltip = ({
         text={text}
         style={{
           color: "#e6e9ef",
-          fontFamily: ["Inter", "Noto Sans CJK JP", "Noto Color Emoji"],
+          fontFamily: ["SF Pro Text", "Noto Sans CJK JP", "Noto Color Emoji"],
           fontSize: 12,
         }}
       />
@@ -1253,12 +1441,9 @@ const TitlebarTooltip = ({
 const MaximizeButton = ({ window }: { window: WaylandWindow }) => {
   const [hover, setHover] = useState(false);
 
-  const borderColor = computed(() => {
-    if (!window.isResizable()) {
-      return "#00000000";
-    }
-    return hover() ? "#00000000" : "#00BFFF30";
-  });
+  const lit = computed(() => (window.isResizable() ? focusAmount(window)() : 0));
+  const buttonBackground = computed(() => mixColor("#c8c7cc", "#28c840", lit()));
+  const borderColor = computed(() => mixColor("#b6b5ba", "#1aab29", lit()));
   const shouldHover = computed(() => hover() && window.isResizable());
 
   var icon: CompositionRenderable | null = null;
@@ -1288,8 +1473,8 @@ const MaximizeButton = ({ window }: { window: WaylandWindow }) => {
         style={{
           width: TITLEBAR_BUTTON_SIZE,
           height: TITLEBAR_BUTTON_SIZE,
-          borderRadius: 8,
-          background: "#FFFFFF20",
+          borderRadius: TITLEBAR_BUTTON_SIZE / 2,
+          background: buttonBackground,
           border: { px: 1, color: borderColor },
         }}
         onClick={() => {
@@ -1319,7 +1504,8 @@ const MaximizeButton = ({ window }: { window: WaylandWindow }) => {
 const MinimizeButton = ({ window }: { window: WaylandWindow }) => {
   const [hover, setHover] = useState(false);
 
-  const borderColor = hover((hover) => (hover ? "#00000000" : "#F8FF7530"));
+  const buttonBackground = focusMix(window, "#c8c7cc", "#febc2e");
+  const borderColor = focusMix(window, "#b6b5ba", "#e1a116");
 
   var icon: CompositionRenderable | null = null;
   if (hover()) {
@@ -1344,8 +1530,8 @@ const MinimizeButton = ({ window }: { window: WaylandWindow }) => {
         style={{
           width: TITLEBAR_BUTTON_SIZE,
           height: TITLEBAR_BUTTON_SIZE,
-          borderRadius: 8,
-          background: "#FFFFFF20",
+          borderRadius: TITLEBAR_BUTTON_SIZE / 2,
+          background: buttonBackground,
           border: { px: 1, color: borderColor },
         }}
         onClick={() => window.minimize()}

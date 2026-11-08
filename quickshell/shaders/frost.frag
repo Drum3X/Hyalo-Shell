@@ -27,8 +27,10 @@ float roundedBox(vec2 p, vec2 halfSize, float r) {
 }
 
 vec3 sampleAt(vec2 px) {
-    vec2 uv = rect.xy + clamp(px / size, 0.0, 1.0) * rect.zw;
-    return texture(source, uv).rgb;
+    // Clamped to the backdrop, not to this item: clamping to the item
+    // smeared its border pixels into streaks.
+    vec2 uv = rect.xy + (px / size) * rect.zw;
+    return texture(source, clamp(uv, 0.0, 1.0)).rgb;
 }
 
 void main() {
@@ -52,8 +54,12 @@ void main() {
     n = length(n) > 0.0001 ? normalize(n) : vec2(0.0);
 
     // 0 deep inside, 1 at the edge; squared so the bend is concentrated at the rim.
-    float edge = clamp(1.0 + d / max(rimWidth, 1.0), 0.0, 1.0);
-    float bend = edge * edge * refraction;
+    // The rim never reaches past the centre line of a thin shape (a pill):
+    // there the normal flips, and a bend still running would tear the
+    // picture in two along the middle. The bend is kept within the rim too.
+    float rim = min(rimWidth, min(halfSize.x, halfSize.y));
+    float edge = clamp(1.0 + d / max(rim, 1.0), 0.0, 1.0);
+    float bend = edge * edge * min(refraction, rim * 0.6);
 
     vec2 offset = -n * bend;
     vec3 color = vec3(sampleAt(px + offset * 1.06).r,
@@ -66,8 +72,6 @@ void main() {
     float rimBand = 1.0 - smoothstep(0.0, 1.6, -d);
     float facing = 0.55 + 0.45 * dot(n, normalize(vec2(-0.5, -1.0)));
     color += rimColor.rgb * rimBand * facing;
-    // A soft inner glow along the edge.
-    color += vec3(0.06) * edge * edge;
 
     fragColor = vec4(clamp(color, 0.0, 1.0), 1.0) * coverage * qt_Opacity;
 }
